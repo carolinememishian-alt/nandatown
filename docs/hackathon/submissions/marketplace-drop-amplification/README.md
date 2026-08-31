@@ -1,35 +1,34 @@
-# Small faults, large damage: message-loss amplification in `marketplace`
+# Small faults, large damage: message loss in `marketplace`
 
 **Scenario:** `marketplace` (built-in)
-**Setting changed:** `failures.message_drop` — one setting, nothing else
+**Setting changed:** `failures.message_drop`, and nothing else
 **Files:** [`scenarios/marketplace_drop_sweep.yaml`](../../../../scenarios/marketplace_drop_sweep.yaml), [`sweep.py`](sweep.py)
 
 ---
 
-## The choice
+## What I changed and why
 
 I changed `failures.message_drop` and left every other field in
-`marketplace.yaml` untouched — same 100 agents, same 12 layers, same
-`catalog_size` and `rounds`.
+`marketplace.yaml` alone. Same 100 agents, same 12 layers, same
+`catalog_size`, same `rounds`.
 
-I picked it for two reasons. It models the most ordinary real-world failure
-there is — an unreliable network — and `marketplace` is a request/response
-protocol, so it is exactly the shape of system where I would expect message
-loss to matter. I wanted to know how much reliability this stack actually
-needs before it stops functioning.
+I picked that setting because dropped messages are the most ordinary thing
+that goes wrong on a real network. And `marketplace` runs on request and
+response, so it seemed like the kind of system where losing messages would
+actually matter.
 
-## The hypothesis (written before running)
+## What I expected
 
-**Degradation would be proportional.** A 5% drop rate would cost roughly 5%
-of marketplace activity, because the only thing lost is the dropped messages
-themselves. I expected a straight line.
+That the damage would be proportional. Lose 5% of the messages, lose about 5%
+of the trading, because the only thing gone is the messages that got dropped.
+I expected a straight line.
 
-That was wrong.
+I was wrong.
 
 ## What happened
 
-Five seeds per rate, `nest run` with `--seed` overrides, counting `send`,
-`dropped`, and `receive` events directly from the JSONL traces:
+Five seeds at each rate, run with `nest run --seed`, counting `send`,
+`dropped` and `receive` events straight out of the JSONL traces:
 
 | configured drop | sends (mean ± sd) | observed drop | activity vs. baseline | amplification |
 |---:|---:|---:|---:|---:|
@@ -38,112 +37,130 @@ Five seeds per rate, `nest run` with `--seed` overrides, counting `send`,
 | 10% | 426.2 ± 49.9 | 10.3% | 42.6% | 5.7× |
 | 20% | 242.6 ± 28.5 | 20.1% | 24.3% | 3.8× |
 
-*Amplification = share of activity destroyed ÷ share of messages lost. A
-proportional system would read 1.0×.*
+*Amplification is just the damage divided by its cause: share of activity
+lost ÷ share of messages lost. A proportional system would read 1.0×.*
 
-**Losing 1 message in 20 removed 36% of all marketplace activity.**
+**Losing 1 message in 20 wiped out 36% of all marketplace activity.**
 
-Two supporting details:
+Two things worth adding:
 
-- **The transport layer is innocent.** Averaged across seeds, the observed
-  per-message drop rate matches the configured rate almost exactly (5.0%,
-  10.3%, 20.1%). `in_memory` drops precisely what it is told to drop. The
-  amplification happens *downstream* of the drop.
-- **Baseline is perfectly deterministic** — exactly 1000 sends on all five
-  seeds, zero variance. With no failures injected this scenario has no
-  stochasticity at all, which makes it a clean control.
+- **The transport layer isn't the problem.** Averaged across seeds, the
+  observed drop rate matches what I configured almost exactly (5.0%, 10.3%,
+  20.1%). `in_memory` drops exactly what it's told to drop. The damage
+  happens after that.
+- **The baseline is completely deterministic** — exactly 1000 sends on all
+  five seeds, no variance at all. With no failures injected there's no
+  randomness in this scenario, which makes it a clean thing to compare
+  against.
 
-### Why it amplifies
+### Why one lost message costs so much
 
-Every `send` in these traces carries its own correlation ID, and a
-conversation is a chain: a buyer's offer must arrive for the seller to reply,
-and the reply must arrive for anything after it to happen. Dropping one
-message does not cost one message — it silently deletes the entire remainder
-of that exchange. Measured across the sweep, each dropped message eliminated
-roughly **12–18 sends that never occurred**.
+Every `send` in these traces has its own correlation ID, and a conversation is
+a chain. The buyer's offer has to arrive before the seller can reply, and the
+reply has to arrive before anything after it can happen. So dropping one
+message doesn't cost you one message — it quietly deletes everything that
+would have followed. Across the sweep, each dropped message took roughly
+**12 to 18 other sends** down with it.
 
-Nothing reports an error. The buyer simply waits.
+Nothing raises an error. The buyer just waits.
 
-### The counterintuitive part
+### The part I didn't expect
 
-The amplification factor is **largest when the fault is smallest** — 7.2× at
-5% loss, falling to 3.8× at 20%. That is not a measurement artifact: once the
-market has already collapsed there is little activity left to destroy, so the
-damage curve flattens as it approaches total failure.
+The multiplier is **biggest when the fault is smallest**. It's 7.2× at 5%
+loss and only 3.8× at 20%. That isn't a measurement artifact — once the
+market has mostly collapsed there isn't much activity left to destroy, so the
+curve flattens as it approaches total failure.
 
-The practical reading: the small, easy-to-shrug-at fault rates are the ones
-that punish hardest relative to their size. A 5% packet loss is the kind of
-number that gets waved through in review.
+Which means the small, easy-to-ignore failure rates are the ones that punish
+you hardest for their size. 5% packet loss is exactly the sort of number that
+gets waved through.
 
-## What surprised me, and how I investigated it
+## What surprised me, and how I checked it
 
-**The result surprised me, but my own method was the bigger problem.**
+The result surprised me, but my own method turned out to be the bigger
+problem.
 
-My first pass swept `message_drop` from 0.00 to 0.50 with a **single seed per
+My first pass swept `message_drop` from 0.00 to 0.50 using a **single seed per
 rate**. At the high end the observed drop rates came back at 43.9% and 56.2%
-against configured 40% and 50% — above nominal. I nearly wrote that up as a
-finding about the failure injector over-dropping.
+against configured 40% and 50%. Higher than they should have been. I nearly
+wrote that up as a bug in the failure injector.
 
-Before doing that I checked the sample size. Only ~100 sends survived at
-those rates, so the deviation was under 1.5 standard deviations — ordinary
-sampling noise, not an effect. Worse, changing the failure rate also
-perturbs the failure-injection RNG stream, so single-seed runs at different
-rates are not clean controlled comparisons of each other.
+Before doing that I checked the sample size. Only around 100 sends survived at
+those rates, so the gap was under 1.5 standard deviations — just noise. And
+there was a worse problem: changing the failure rate also shifts the
+failure-injection RNG stream, so single-seed runs at different rates aren't
+really controlled comparisons of each other.
 
 So I rebuilt it as the 4 rates × 5 seeds sweep above. Averaged properly, the
-observed rates converged on nominal and the anomaly disappeared entirely.
-**The amplification finding survived; the exciting one did not.**
+observed rates landed on nominal and the anomaly disappeared. **The
+amplification finding survived. The exciting one didn't.**
 
-**Second false alarm:** every event in every trace carries `ts: 0.0`, and
-`duration` reports `0.0 ticks`. I initially took this for a bug, since
-`marketplace.yaml` lists `mean_latency` as a metric it cannot produce. It is
-documented behavior — the README's "Determinism & what the clock does"
-states that `in_memory` delivers at `time = now`, so the clock never
-advances. I dropped `mean_latency` from the scenario's metrics and used
-message counts instead, which the trace can actually support.
+**A second false alarm:** every event in every trace has `ts: 0.0`, and
+`duration` reports `0.0 ticks`. I thought this was a bug, since
+`marketplace.yaml` lists `mean_latency` as a metric it can't actually produce.
+It's documented behaviour — the repo README's "Determinism & what the clock
+does" says `in_memory` delivers at `time = now`, so the clock never advances.
+I dropped `mean_latency` from the scenario and used message counts instead,
+which the trace can actually support.
 
-## Reproducing
+## Running it yourself
 
 ```bash
 python docs/hackathon/submissions/marketplace-drop-amplification/sweep.py
 ```
 
-Runs 20 simulations into `traces/drop_sweep/` and prints the table above.
-Takes about a minute. Every number in this README comes from that script.
+That runs 20 simulations into `traces/drop_sweep/` and prints the table above.
+Takes about a minute. Every number here comes out of that script.
 
-## Limits — read before believing this
+## What I'd build next
+
+Two things, both of which fall out of the result above.
+
+A **retry-and-acknowledge layer** for comms: agents confirm they received a
+message, and resend if no confirmation comes back. That turns a lost message
+into a short wait instead of a dead conversation, which is the whole mechanism
+behind the 7×.
+
+And a **validator that reports the amplification factor** rather than the raw
+loss rate. "5% of messages dropped" is true and almost useless — it makes the
+problem sound small when it isn't. "This setup degrades 7× faster than its
+loss rate" is a number someone would actually act on, and it would let you
+compare coordination layers on how well they hold up instead of just how fast
+they are.
+
+## Limits — worth reading before believing any of this
 
 - **One scenario, one task type.** This is `marketplace`'s request/response
-  chain. I have not checked whether `auction`, `voting`, or `consensus`
-  amplify similarly, and the mechanism suggests the factor depends heavily on
-  how long a scenario's conversation chains are. Do not generalize the 7×.
-- **Five seeds is few.** Enough to kill the high-rate anomaly and show the
-  amplification is not seed-specific, not enough for tight confidence
-  intervals. The ±50 standard deviation at 10% is real spread.
-- **Activity is not welfare.** I measured message volume, not completed
-  trades or value exchanged. Sends are a proxy for "the market is working,"
-  and a reasonable one here, but they are not the same thing.
-- **Only four rates, all ≤ 20%.** The controlled sweep deliberately stops at
-  20%; the 30–50% points come from the noisier single-seed pass and are not
-  claimed here.
+  chain. I haven't checked `auction`, `voting` or `consensus`, and the
+  mechanism suggests the factor depends a lot on how long a scenario's
+  conversation chains are. The 7× shouldn't be generalised.
+- **Five seeds isn't many.** Enough to kill the high-rate anomaly and show
+  the amplification isn't seed-specific. Not enough for tight confidence
+  intervals. That ±50 standard deviation at 10% is real spread.
+- **Activity isn't the same as welfare.** I counted messages, not completed
+  trades or value exchanged. Sends are a reasonable proxy for "the market is
+  working" here, but they're a proxy.
+- **Only four rates, none above 20%.** The controlled sweep stops at 20% on
+  purpose. The 30–50% numbers come from the noisier single-seed pass and I'm
+  not claiming them.
 - **Tier 1, single process, zero-latency transport.** No real network, no
-  clock skew, no concurrency. Message loss is the only failure mode modelled.
+  clock skew, no concurrency. Message loss is the only failure mode here.
 
 ## Tools and help
 
-- **Claude Code (Claude Opus)** — used heavily, and worth being precise about
-  the division of labour. I ran the built-in `marketplace` scenario and wrote
-  my first custom scenarios by hand. The agent then wrote `sweep.py`, ran the
-  20-run controlled sweep, and computed the summary statistics. I directed the
+- **Claude Code (Claude Opus)** as a coding agent, and it's worth being
+  precise about who did what. I ran the built-in `marketplace` scenario and
+  wrote my first custom scenarios by hand. The agent wrote `sweep.py`, ran the
+  20-run controlled sweep and computed the summary statistics. I set up the
   experiment, reviewed the output, and re-ran the sweep myself to confirm the
   table above reproduces.
 - **`nest-core` CLI** — `nest run`, `nest inspect`.
-- **Python** `json` and `statistics` for parsing JSONL traces and computing
+- **Python** `json` and `statistics`, for reading the traces and working out
   per-seed means and standard deviations.
-- **NANDA Town Quickstart, scenario guide, and repo README** — the last of
-  these is what settled the `mean_latency` question.
+- **NANDA Town quickstart, scenario guide and repo README.** The last of
+  those is where I found the `mean_latency` answer.
 
-The most valuable use of the agent was adversarial rather than generative:
-asking it to check whether my evidence actually supported my conclusion is
-how both the single-seed flaw and the `mean_latency` false alarm were caught
-before they reached this README.
+The most useful thing I did with the agent was adversarial rather than
+generative: asking it whether my evidence actually supported my conclusion is
+how both the single-seed flaw and the `mean_latency` false alarm got caught
+before they ended up in this README.

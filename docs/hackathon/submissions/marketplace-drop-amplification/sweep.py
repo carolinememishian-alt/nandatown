@@ -82,7 +82,8 @@ def main() -> int:
         sd = st.stdev(sends) if len(sends) > 1 else 0.0
         observed = sum(drops) / sum(sends) * 100 if sum(sends) else 0.0
         activity = st.mean(sends) / baseline * 100
-        # Amplification: share of activity destroyed, per unit of message loss.
+        # Amplification: how much activity you lose, divided by how many
+        # messages you lose. A proportional system would read 1.0x.
         amp = (100 - activity) / (rate * 100) if rate else 0.0
         amp_str = f"{amp:.1f}x" if rate else "-"
         print(

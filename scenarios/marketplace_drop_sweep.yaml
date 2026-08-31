@@ -1,9 +1,9 @@
 # SPDX-License-Identifier: Apache-2.0
 # Marketplace under message loss.
 #
-# Identical to `marketplace.yaml` in every respect except one:
-# `failures.message_drop`. That single setting is the independent variable
-# for the experiment written up in
+# Exactly the same as `marketplace.yaml` apart from one setting:
+# `failures.message_drop`. That's the only thing the experiment changes.
+# The writeup is in
 # docs/hackathon/submissions/marketplace-drop-amplification/README.md
 #
 # Run the full sweep with:
@@ -47,17 +47,18 @@ task:
     rounds: 10
 
 failures:
-  # THE ONE VARIABLE. Baseline marketplace.yaml ships 0.05.
-  # Swept across 0.00 / 0.05 / 0.10 / 0.20 x 5 seeds.
+  # This is the one setting the experiment changes. The stock
+  # marketplace.yaml ships 0.05. Swept across 0.00 / 0.05 / 0.10 / 0.20,
+  # five seeds each.
   message_drop: 0.05
 
 duration: "ticks: 10000"
 
 metrics:
-  # `mean_latency` is deliberately omitted. The bundled in_memory transport
-  # delivers at time = now, so the virtual clock never advances and latency
-  # reads 0.0 by design (see "Determinism & what the clock does" in README.md).
-  # Message counts are the meaningful signal here.
+  # `mean_latency` is left out on purpose. The in_memory transport delivers
+  # at time = now, so the clock never advances and latency always reads 0.0
+  # (see "Determinism & what the clock does" in the repo README). Message
+  # counts are the signal that actually means something here.
   - success_rate
   - message_count
 
