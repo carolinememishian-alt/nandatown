@@ -1,0 +1,65 @@
+# SPDX-License-Identifier: Apache-2.0
+# Marketplace under message loss.
+#
+# Identical to `marketplace.yaml` in every respect except one:
+# `failures.message_drop`. That single setting is the independent variable
+# for the experiment written up in
+# docs/hackathon/submissions/marketplace-drop-amplification/README.md
+#
+# Run the full sweep with:
+#   python docs/hackathon/submissions/marketplace-drop-amplification/sweep.py
+#
+# Or a single point:
+#   nest run scenarios/marketplace_drop_sweep.yaml --seed 1
+name: marketplace_drop_sweep
+description: "50 buyers and 50 sellers trading under a lossy network."
+
+tier: 1
+seed: 42
+
+agents:
+  count: 100
+  brain: state-machine
+  roles:
+    - name: buyer
+      count: 50
+    - name: seller
+      count: 50
+
+layers:
+  transport: in_memory
+  comms: nest_native
+  identity: did_key
+  registry: in_memory
+  auth: jwt
+  trust: score_average
+  payments: prepaid_credits
+  coordination: contract_net
+  negotiation: alternating_offers
+  memory: blackboard
+  privacy: noop
+  datafacts: datafacts_v1
+
+task:
+  type: marketplace
+  config:
+    catalog_size: 200
+    rounds: 10
+
+failures:
+  # THE ONE VARIABLE. Baseline marketplace.yaml ships 0.05.
+  # Swept across 0.00 / 0.05 / 0.10 / 0.20 x 5 seeds.
+  message_drop: 0.05
+
+duration: "ticks: 10000"
+
+metrics:
+  # `mean_latency` is deliberately omitted. The bundled in_memory transport
+  # delivers at time = now, so the virtual clock never advances and latency
+  # reads 0.0 by design (see "Determinism & what the clock does" in README.md).
+  # Message counts are the meaningful signal here.
+  - success_rate
+  - message_count
+
+output:
+  trace: ./traces/marketplace_drop_sweep.jsonl
